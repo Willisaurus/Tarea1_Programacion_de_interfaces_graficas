@@ -34,6 +34,7 @@ public class ventana extends JFrame {
     public JButton btn_add;
     public JButton btn_modificar;
     public JButton btn_eliminar;
+    public JButton btn_importar;
 
     // NUEVO
     public JButton btn_exportar;
@@ -156,10 +157,12 @@ public class ventana extends JFrame {
         btn_modificar = new JButton("Modificar");
         btn_eliminar = new JButton("Eliminar");
         btn_exportar = new JButton("Exportar CSV"); // NUEVO
+        btn_importar = new JButton("Importar CSV");
         panelBotones.add(btn_add);
         panelBotones.add(btn_modificar);
         panelBotones.add(btn_eliminar);
         panelBotones.add(btn_exportar);
+        panelBotones.add(btn_importar);
 
         panelInferior.add(panelBotones, BorderLayout.WEST);
 

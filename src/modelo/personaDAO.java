@@ -80,4 +80,26 @@ public class personaDAO {
             return false;
         }
     }
+
+    public List<persona> leerCualquierArchivo(File archivoDestino) throws IOException {
+        List<persona> lista = new ArrayList<>();
+
+        try (BufferedReader br = new BufferedReader(new FileReader(archivoDestino))) {
+            String linea;
+            boolean primera = true;
+
+            while ((linea = br.readLine()) != null) {
+                // Saltamos el encabezado
+                if (primera) { primera = false; continue; }
+                if (linea.trim().isEmpty()) continue;
+
+                String[] p = linea.split(";");
+                // Validamos que tenga exactamente 5 columnas
+                if (p.length == 5) {
+                    lista.add(new persona(p[0], p[1], p[2], p[3], Boolean.parseBoolean(p[4])));
+                }
+            }
+        }
+        return lista;
+    }
 }

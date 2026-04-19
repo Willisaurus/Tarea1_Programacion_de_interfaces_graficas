@@ -45,7 +45,7 @@ public class logica_ventana implements ActionListener {
         configurarTablaYFiltro();
         configurarAtajosTeclado();
         configurarMenuContextual();
-        cargarContactosConProgreso();
+        procesarArchivoEnSegundoPlano(null, false);
     }
 
     private void configurarEventos() {
@@ -53,6 +53,7 @@ public class logica_ventana implements ActionListener {
         delegado.btn_modificar.addActionListener(this);
         delegado.btn_eliminar.addActionListener(this);
         delegado.btn_exportar.addActionListener(this);
+        delegado.btn_importar.addActionListener(this);
 
         /*
          * ELIMINADO DEL CÓDIGO ANTERIOR:
@@ -132,34 +133,49 @@ public class logica_ventana implements ActionListener {
         });
     }
 
-    private void cargarContactosConProgreso() {
-        // NUEVO REQ-3: progreso de carga
-        SwingWorker<List<persona>, Integer> worker = new SwingWorker<List<persona>, Integer>() {
+    // NUEVO MÉTODO QUE MANEJA CARGA E IMPORTACIÓN PERMITIENDO VISUALIZAR ANIMACION DE PROGRESSBAR SUSTITUYEBDO EL METODO ANTERIOR
+    private void procesarArchivoEnSegundoPlano(File archivoImportar, boolean esImportacion) {
+        // Activa la animación de la barra
+        delegado.progressBar.setIndeterminate(true);
+        delegado.progressBar.setString(esImportacion ? "Importando contactos..." : "Cargando contactos...");
+
+        SwingWorker<List<persona>, Void> worker = new SwingWorker<List<persona>, Void>() {
             @Override
             protected List<persona> doInBackground() throws Exception {
-                delegado.progressBar.setString("Cargando contactos...");
-                for (int i = 0; i <= 100; i += 20) {
-                    Thread.sleep(60);
-                    publish(i);
-                }
-                return dao.leerArchivo();
-            }
+                // Ya que los procesos son cortos se usa un pequeño retardo para que el usuario vea la animación
+                Thread.sleep(600);
 
-            @Override
-            protected void process(List<Integer> chunks) {
-                delegado.progressBar.setValue(chunks.get(chunks.size() - 1));
+                if (esImportacion && archivoImportar != null) {
+                    return dao.leerCualquierArchivo(archivoImportar);
+                } else {
+                    return dao.leerArchivo();
+                }
             }
 
             @Override
             protected void done() {
+                // Detiene la animación
+                delegado.progressBar.setIndeterminate(false);
+                delegado.progressBar.setValue(100);
+
                 try {
-                    contactos = get();
+                    List<persona> datosNuevos = get();
+
+                    if (esImportacion) {
+                        contactos.addAll(datosNuevos);
+                        dao.guardarTodos(contactos);   // Guarda todo en el archivo principal
+                        JOptionPane.showMessageDialog(delegado, "Se importaron " + datosNuevos.size() + " contactos.");
+                    } else {
+                        contactos = datosNuevos; // Carga inicial
+                    }
+
                     refrescarTabla();
                     actualizarEstadisticas();
-                    delegado.progressBar.setString("Carga completa");
+                    delegado.progressBar.setString("Listo");
+
                 } catch (Exception e) {
-                    JOptionPane.showMessageDialog(delegado, "Error al cargar contactos.");
                     delegado.progressBar.setString("Error");
+                    JOptionPane.showMessageDialog(delegado, "Error al procesar el archivo CSV.");
                 }
             }
         };
@@ -298,6 +314,17 @@ public class logica_ventana implements ActionListener {
             }
         }
     }
+    //logica apra boton importar
+    private void importarCSV() {
+        JFileChooser chooser = new JFileChooser();
+        chooser.setDialogTitle("Importar contactos desde CSV");
+
+        int opcion = chooser.showOpenDialog(delegado);
+        if (opcion == JFileChooser.APPROVE_OPTION) {
+            File origen = chooser.getSelectedFile();
+            procesarArchivoEnSegundoPlano(origen, true);
+        }
+    }
 
     private void actualizarEstadisticas() {
         // NUEVO REQ-1/3: segunda pestaña con resumen
@@ -326,5 +353,6 @@ public class logica_ventana implements ActionListener {
         else if (src == delegado.btn_modificar) modificarContacto();
         else if (src == delegado.btn_eliminar) eliminarSeleccionado();
         else if (src == delegado.btn_exportar) exportarCSV();
+        else if (src == delegado.btn_importar) importarCSV();
     }
 }
