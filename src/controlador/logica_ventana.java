@@ -2,19 +2,10 @@ package controlador;
 
 import modelo.persona;
 import modelo.personaDAO;
+import vista.ThemeManager;
 import vista.ventana;
 
-import javax.swing.AbstractAction;
-import javax.swing.ActionMap;
-import javax.swing.InputMap;
-import javax.swing.JComponent;
-import javax.swing.JFileChooser;
-import javax.swing.JMenuItem;
-import javax.swing.JOptionPane;
-import javax.swing.JPopupMenu;
-import javax.swing.KeyStroke;
-import javax.swing.RowFilter;
-import javax.swing.SwingWorker;
+import javax.swing.*;
 import javax.swing.event.DocumentEvent;
 import javax.swing.event.DocumentListener;
 import javax.swing.table.TableRowSorter;
@@ -25,20 +16,41 @@ import java.awt.event.KeyEvent;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 import java.io.File;
+import java.text.MessageFormat;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
+import java.util.ResourceBundle;
 import java.util.regex.Pattern;
 
+/**
+ * Controlador principal – conecta la Vista (ventana) con el Modelo (persona / personaDAO).
+ *
+ * Cambios respecto a la versión anterior:
+ *  – Toda cadena de texto visible obtiene su valor del ResourceBundle activo
+ *    para soportar los tres idiomas (ES / EN / JA).
+ *  – Se añaden listeners para el selector de idioma (cmb_idioma) y el botón
+ *    de tema (btn_tema).
+ *  – translateCategory() convierte el valor canónico (español, almacenado en
+ *    CSV) al nombre localizado que se muestra en la tabla.
+ *  – construirDesdeFormulario() usa el índice del ComboBox para obtener siempre
+ *    el valor canónico, garantizando compatibilidad con el CSV.
+ */
 public class logica_ventana implements ActionListener {
 
-    private final ventana delegado;
+    private final ventana    delegado;
     private final personaDAO dao;
-    private List<persona> contactos;
-    private TableRowSorter sorter;
+    private List<persona>    contactos;
+    private TableRowSorter<?>  sorter;
+
+    // Ítems del menú contextual (se actualizan al cambiar idioma)
+    private JMenuItem menuItemEditar;
+    private JMenuItem menuItemEliminar;
+    private JPopupMenu popupMenu;
 
     public logica_ventana(ventana delegado) {
-        this.delegado = delegado;
-        this.dao = new personaDAO();
+        this.delegado  = delegado;
+        this.dao       = new personaDAO();
         this.contactos = new ArrayList<>();
 
         configurarEventos();
@@ -48,59 +60,76 @@ public class logica_ventana implements ActionListener {
         procesarArchivoEnSegundoPlano(null, false);
     }
 
+    // ═══════════════════════════════════════════════════════════════════════════
+    //  CONFIGURACIÓN INICIAL
+    // ═══════════════════════════════════════════════════════════════════════════
+
     private void configurarEventos() {
+        // Botones de acción
         delegado.btn_add.addActionListener(this);
         delegado.btn_modificar.addActionListener(this);
         delegado.btn_eliminar.addActionListener(this);
         delegado.btn_exportar.addActionListener(this);
         delegado.btn_importar.addActionListener(this);
 
-        /*
-         * ELIMINADO DEL CÓDIGO ANTERIOR:
-         * this.delegado.lst_contactos.addListSelectionListener(this);
-         * implementación de ListSelectionListener centrada en JList.
-         *
-         * MOTIVO:
-         * Ahora se usa JTable (más potente para ordenar/filtrar).
-         */
+        // Selección en la tabla → carga el formulario
         delegado.tbl_contactos.getSelectionModel().addListSelectionListener(e -> {
             if (!e.getValueIsAdjusting()) cargarFilaEnFormulario();
         });
 
-        // NUEVO: filtro en vivo
+        // Búsqueda en tiempo real
         delegado.txt_buscar.getDocument().addDocumentListener(new DocumentListener() {
             public void insertUpdate(DocumentEvent e) { aplicarFiltro(); }
             public void removeUpdate(DocumentEvent e) { aplicarFiltro(); }
             public void changedUpdate(DocumentEvent e) { aplicarFiltro(); }
         });
+
+        // ── Selector de idioma ────────────────────────────────────────────────
+        delegado.cmb_idioma.addActionListener(e -> {
+            String code   = delegado.getSelectedLocaleCode();
+            Locale locale = new Locale(code);
+            delegado.updateTexts(locale);
+            delegado.applyTheme();      // reaplica colores (botón tema cambia texto)
+            refrescarTabla();           // actualiza categorías traducidas en tabla
+            actualizarEstadisticas();   // actualiza etiquetas de stats
+            actualizarMenuContextual(); // actualiza textos del menú contextual
+        });
+
+        // ── Botón de tema ─────────────────────────────────────────────────────
+        delegado.btn_tema.addActionListener(e -> {
+            ThemeManager.toggleTheme();
+            delegado.applyTheme();
+        });
     }
 
     private void configurarTablaYFiltro() {
-        // NUEVO: ordenamiento y filtro en JTable
-        sorter = new TableRowSorter(delegado.tableModel);
+        sorter = new TableRowSorter<>(delegado.tableModel);
         delegado.tbl_contactos.setRowSorter(sorter);
     }
 
     private void configurarAtajosTeclado() {
-        // NUEVO REQ-2: atajos de teclado
         InputMap im = delegado.contentPane.getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW);
         ActionMap am = delegado.contentPane.getActionMap();
 
+        // Ctrl+N → nuevo / limpiar campos
         im.put(KeyStroke.getKeyStroke(KeyEvent.VK_N, InputEvent.CTRL_DOWN_MASK), "nuevo");
         am.put("nuevo", new AbstractAction() {
             @Override public void actionPerformed(ActionEvent e) { limpiarCampos(); }
         });
 
+        // Ctrl+E → exportar CSV
         im.put(KeyStroke.getKeyStroke(KeyEvent.VK_E, InputEvent.CTRL_DOWN_MASK), "exportar");
         am.put("exportar", new AbstractAction() {
             @Override public void actionPerformed(ActionEvent e) { exportarCSV(); }
         });
 
+        // Supr → eliminar contacto seleccionado
         im.put(KeyStroke.getKeyStroke(KeyEvent.VK_DELETE, 0), "eliminar");
         am.put("eliminar", new AbstractAction() {
             @Override public void actionPerformed(ActionEvent e) { eliminarSeleccionado(); }
         });
 
+        // Ctrl+F → enfocar buscador
         im.put(KeyStroke.getKeyStroke(KeyEvent.VK_F, InputEvent.CTRL_DOWN_MASK), "buscar");
         am.put("buscar", new AbstractAction() {
             @Override public void actionPerformed(ActionEvent e) { delegado.txt_buscar.requestFocus(); }
@@ -108,53 +137,65 @@ public class logica_ventana implements ActionListener {
     }
 
     private void configurarMenuContextual() {
-        // NUEVO REQ-2: menú clic derecho
-        JPopupMenu menu = new JPopupMenu();
-        JMenuItem editar = new JMenuItem("Editar");
-        JMenuItem eliminar = new JMenuItem("Eliminar");
+        popupMenu = new JPopupMenu();
+        menuItemEditar   = new JMenuItem(bundle().getString("menu.edit"));
+        menuItemEliminar = new JMenuItem(bundle().getString("menu.delete"));
 
-        editar.addActionListener(e -> cargarFilaEnFormulario());
-        eliminar.addActionListener(e -> eliminarSeleccionado());
+        menuItemEditar.addActionListener(e   -> cargarFilaEnFormulario());
+        menuItemEliminar.addActionListener(e -> eliminarSeleccionado());
 
-        menu.add(editar);
-        menu.add(eliminar);
+        popupMenu.add(menuItemEditar);
+        popupMenu.add(menuItemEliminar);
 
         delegado.tbl_contactos.addMouseListener(new MouseAdapter() {
-            @Override public void mousePressed(MouseEvent e) { mostrarPopup(e); }
+            @Override public void mousePressed(MouseEvent e)  { mostrarPopup(e); }
             @Override public void mouseReleased(MouseEvent e) { mostrarPopup(e); }
 
             private void mostrarPopup(MouseEvent e) {
                 if (e.isPopupTrigger()) {
                     int row = delegado.tbl_contactos.rowAtPoint(e.getPoint());
                     if (row >= 0) delegado.tbl_contactos.setRowSelectionInterval(row, row);
-                    menu.show(e.getComponent(), e.getX(), e.getY());
+                    popupMenu.show(e.getComponent(), e.getX(), e.getY());
                 }
             }
         });
     }
 
-    // NUEVO MÉTODO QUE MANEJA CARGA E IMPORTACIÓN PERMITIENDO VISUALIZAR ANIMACION DE PROGRESSBAR SUSTITUYEBDO EL METODO ANTERIOR
+    /** Actualiza los textos del menú contextual cuando cambia el idioma. */
+    private void actualizarMenuContextual() {
+        menuItemEditar.setText(bundle().getString("menu.edit"));
+        menuItemEliminar.setText(bundle().getString("menu.delete"));
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    //  CARGA / IMPORTACIÓN EN SEGUNDO PLANO
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Usa un SwingWorker para no bloquear el EDT durante la lectura del CSV.
+     * El mismo método sirve para la carga inicial y para la importación manual.
+     *
+     * @param archivoImportar archivo CSV externo; {@code null} para carga inicial
+     * @param esImportacion   {@code true} si el usuario seleccionó un archivo
+     */
     private void procesarArchivoEnSegundoPlano(File archivoImportar, boolean esImportacion) {
-        // Activa la animación de la barra
         delegado.progressBar.setIndeterminate(true);
-        delegado.progressBar.setString(esImportacion ? "Importando contactos..." : "Cargando contactos...");
+        delegado.progressBar.setString(esImportacion
+                ? bundle().getString("status.importing")
+                : bundle().getString("status.loading"));
 
         SwingWorker<List<persona>, Void> worker = new SwingWorker<List<persona>, Void>() {
             @Override
             protected List<persona> doInBackground() throws Exception {
-                // Ya que los procesos son cortos se usa un pequeño retardo para que el usuario vea la animación
+                // Pausa mínima para que se vea la animación de la barra
                 Thread.sleep(600);
-
-                if (esImportacion && archivoImportar != null) {
-                    return dao.leerCualquierArchivo(archivoImportar);
-                } else {
-                    return dao.leerArchivo();
-                }
+                return esImportacion && archivoImportar != null
+                        ? dao.leerCualquierArchivo(archivoImportar)
+                        : dao.leerArchivo();
             }
 
             @Override
             protected void done() {
-                // Detiene la animación
                 delegado.progressBar.setIndeterminate(false);
                 delegado.progressBar.setValue(100);
 
@@ -163,83 +204,31 @@ public class logica_ventana implements ActionListener {
 
                     if (esImportacion) {
                         contactos.addAll(datosNuevos);
-                        dao.guardarTodos(contactos);   // Guarda todo en el archivo principal
-                        JOptionPane.showMessageDialog(delegado, "Se importaron " + datosNuevos.size() + " contactos.");
+                        dao.guardarTodos(contactos);
+                        JOptionPane.showMessageDialog(delegado,
+                                MessageFormat.format(bundle().getString("msg.import.success"),
+                                        datosNuevos.size()));
                     } else {
-                        contactos = datosNuevos; // Carga inicial
+                        contactos = datosNuevos;
                     }
 
                     refrescarTabla();
                     actualizarEstadisticas();
-                    delegado.progressBar.setString("Listo");
+                    delegado.progressBar.setString(bundle().getString("status.ready"));
 
-                } catch (Exception e) {
-                    delegado.progressBar.setString("Error");
-                    JOptionPane.showMessageDialog(delegado, "Error al procesar el archivo CSV.");
+                } catch (Exception ex) {
+                    delegado.progressBar.setString(bundle().getString("status.error"));
+                    JOptionPane.showMessageDialog(delegado,
+                            bundle().getString("msg.import.error"));
                 }
             }
         };
         worker.execute();
     }
 
-    private void refrescarTabla() {
-        delegado.tableModel.setRowCount(0);
-        for (persona p : contactos) {
-            delegado.tableModel.addRow(new Object[]{
-                    p.getNombre(), p.getTelefono(), p.getEmail(), p.getCategoria(), p.isFavorito()
-            });
-        }
-    }
-
-    private void aplicarFiltro() {
-        String texto = delegado.txt_buscar.getText().trim();
-        if (texto.isEmpty()) sorter.setRowFilter(null);
-        else sorter.setRowFilter(RowFilter.regexFilter("(?i)" + Pattern.quote(texto)));
-    }
-
-    private boolean validarCampos() {
-        if (delegado.txt_nombres.getText().trim().isEmpty() ||
-                delegado.txt_telefono.getText().trim().isEmpty() ||
-                delegado.txt_email.getText().trim().isEmpty()) {
-            JOptionPane.showMessageDialog(delegado, "Completa nombre, teléfono y email.");
-            return false;
-        }
-        return true;
-    }
-
-    private persona construirDesdeFormulario() {
-        return new persona(
-                delegado.txt_nombres.getText().trim(),
-                delegado.txt_telefono.getText().trim(),
-                delegado.txt_email.getText().trim(),
-                delegado.cmb_categoria.getSelectedItem().toString(),
-                delegado.chb_favorito.isSelected()
-        );
-    }
-
-    private void limpiarCampos() {
-        delegado.txt_nombres.setText("");
-        delegado.txt_telefono.setText("");
-        delegado.txt_email.setText("");
-        delegado.cmb_categoria.setSelectedIndex(0);
-        delegado.chb_favorito.setSelected(false);
-        delegado.tbl_contactos.clearSelection();
-        delegado.txt_nombres.requestFocus();
-    }
-
-    private void cargarFilaEnFormulario() {
-        int rowView = delegado.tbl_contactos.getSelectedRow();
-        if (rowView < 0) return;
-
-        // NUEVO CLAVE: por ordenamiento/filtro
-        int rowModel = delegado.tbl_contactos.convertRowIndexToModel(rowView);
-
-        delegado.txt_nombres.setText(String.valueOf(delegado.tableModel.getValueAt(rowModel, 0)));
-        delegado.txt_telefono.setText(String.valueOf(delegado.tableModel.getValueAt(rowModel, 1)));
-        delegado.txt_email.setText(String.valueOf(delegado.tableModel.getValueAt(rowModel, 2)));
-        delegado.cmb_categoria.setSelectedItem(String.valueOf(delegado.tableModel.getValueAt(rowModel, 3)));
-        delegado.chb_favorito.setSelected(Boolean.parseBoolean(String.valueOf(delegado.tableModel.getValueAt(rowModel, 4))));
-    }
+    // ═══════════════════════════════════════════════════════════════════════════
+    //  OPERACIONES CRUD
+    // ═══════════════════════════════════════════════════════════════════════════
 
     private void agregarContacto() {
         if (!validarCampos()) return;
@@ -249,16 +238,16 @@ public class logica_ventana implements ActionListener {
             refrescarTabla();
             actualizarEstadisticas();
             limpiarCampos();
-            JOptionPane.showMessageDialog(delegado, "Contacto agregado.");
+            JOptionPane.showMessageDialog(delegado, bundle().getString("msg.added"));
         } else {
-            JOptionPane.showMessageDialog(delegado, "No se pudo guardar.");
+            JOptionPane.showMessageDialog(delegado, bundle().getString("msg.save.error"));
         }
     }
 
     private void modificarContacto() {
         int rowView = delegado.tbl_contactos.getSelectedRow();
         if (rowView < 0) {
-            JOptionPane.showMessageDialog(delegado, "Selecciona un contacto a modificar.");
+            JOptionPane.showMessageDialog(delegado, bundle().getString("msg.select.modify"));
             return;
         }
         if (!validarCampos()) return;
@@ -269,20 +258,23 @@ public class logica_ventana implements ActionListener {
         if (dao.guardarTodos(contactos)) {
             refrescarTabla();
             actualizarEstadisticas();
-            JOptionPane.showMessageDialog(delegado, "Contacto modificado.");
+            JOptionPane.showMessageDialog(delegado, bundle().getString("msg.modified"));
         } else {
-            JOptionPane.showMessageDialog(delegado, "No se pudo guardar la modificación.");
+            JOptionPane.showMessageDialog(delegado, bundle().getString("msg.modify.error"));
         }
     }
 
     private void eliminarSeleccionado() {
         int rowView = delegado.tbl_contactos.getSelectedRow();
         if (rowView < 0) {
-            JOptionPane.showMessageDialog(delegado, "Selecciona un contacto a eliminar.");
+            JOptionPane.showMessageDialog(delegado, bundle().getString("msg.select.delete"));
             return;
         }
 
-        int resp = JOptionPane.showConfirmDialog(delegado, "¿Eliminar contacto seleccionado?", "Confirmar", JOptionPane.YES_NO_OPTION);
+        int resp = JOptionPane.showConfirmDialog(delegado,
+                bundle().getString("msg.confirm.delete"),
+                bundle().getString("msg.confirm.title"),
+                JOptionPane.YES_NO_OPTION);
         if (resp != JOptionPane.YES_OPTION) return;
 
         int rowModel = delegado.tbl_contactos.convertRowIndexToModel(rowView);
@@ -292,67 +284,196 @@ public class logica_ventana implements ActionListener {
             refrescarTabla();
             actualizarEstadisticas();
             limpiarCampos();
-            JOptionPane.showMessageDialog(delegado, "Contacto eliminado.");
+            JOptionPane.showMessageDialog(delegado, bundle().getString("msg.deleted"));
         } else {
-            JOptionPane.showMessageDialog(delegado, "No se pudo eliminar.");
+            JOptionPane.showMessageDialog(delegado, bundle().getString("msg.delete.error"));
         }
     }
 
     private void exportarCSV() {
-        // NUEVO REQ-3
         JFileChooser chooser = new JFileChooser();
-        chooser.setDialogTitle("Exportar contactos a CSV");
+        chooser.setDialogTitle(bundle().getString("dialog.export.title"));
         chooser.setSelectedFile(new File("contactos_exportados.csv"));
 
-        int opcion = chooser.showSaveDialog(delegado);
-        if (opcion == JFileChooser.APPROVE_OPTION) {
+        if (chooser.showSaveDialog(delegado) == JFileChooser.APPROVE_OPTION) {
             File destino = chooser.getSelectedFile();
             if (dao.exportarCSV(contactos, destino)) {
-                JOptionPane.showMessageDialog(delegado, "Exportación exitosa:\n" + destino.getAbsolutePath());
+                JOptionPane.showMessageDialog(delegado,
+                        MessageFormat.format(bundle().getString("msg.export.success"),
+                                destino.getAbsolutePath()));
             } else {
-                JOptionPane.showMessageDialog(delegado, "Error al exportar CSV.");
+                JOptionPane.showMessageDialog(delegado, bundle().getString("msg.export.error"));
             }
         }
     }
-    //logica apra boton importar
+
     private void importarCSV() {
         JFileChooser chooser = new JFileChooser();
-        chooser.setDialogTitle("Importar contactos desde CSV");
+        chooser.setDialogTitle(bundle().getString("dialog.import.title"));
 
-        int opcion = chooser.showOpenDialog(delegado);
-        if (opcion == JFileChooser.APPROVE_OPTION) {
-            File origen = chooser.getSelectedFile();
-            procesarArchivoEnSegundoPlano(origen, true);
+        if (chooser.showOpenDialog(delegado) == JFileChooser.APPROVE_OPTION) {
+            procesarArchivoEnSegundoPlano(chooser.getSelectedFile(), true);
         }
     }
 
+    // ═══════════════════════════════════════════════════════════════════════════
+    //  HELPERS DE DATOS Y UI
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /** Rellena la tabla con los contactos actuales y traduce las categorías. */
+    private void refrescarTabla() {
+        delegado.tableModel.setRowCount(0);
+        for (persona p : contactos) {
+            delegado.tableModel.addRow(new Object[]{
+                    p.getNombre(),
+                    p.getTelefono(),
+                    p.getEmail(),
+                    translateCategory(p.getCategoria()),
+                    p.isFavorito()
+            });
+        }
+    }
+
+    /**
+     * Convierte el valor canónico de categoría (guardado en español en el CSV)
+     * al nombre localizado para mostrarlo en la tabla.
+     *
+     * @param storedKey valor leído del CSV ("Amigo", "Trabajo", "Familia", "Otro")
+     * @return nombre de la categoría en el idioma activo
+     */
+    private String translateCategory(String storedKey) {
+        String[] display = delegado.getCategoryDisplayNames();
+        for (int i = 0; i < ventana.CATEGORY_KEYS.length; i++) {
+            if (ventana.CATEGORY_KEYS[i].equalsIgnoreCase(storedKey)) {
+                return display[i];
+            }
+        }
+        return storedKey; // fallback: devuelve el valor tal cual
+    }
+
+    /** Aplica el filtro de búsqueda sobre todas las columnas de la tabla. */
+    private void aplicarFiltro() {
+        String texto = delegado.txt_buscar.getText().trim();
+        if (texto.isEmpty()) {
+            sorter.setRowFilter(null);
+        } else {
+            sorter.setRowFilter(RowFilter.regexFilter("(?i)" + Pattern.quote(texto)));
+        }
+    }
+
+    /** Valida que los campos obligatorios no estén vacíos. */
+    private boolean validarCampos() {
+        if (delegado.txt_nombres.getText().trim().isEmpty() ||
+                delegado.txt_telefono.getText().trim().isEmpty() ||
+                delegado.txt_email.getText().trim().isEmpty()) {
+            JOptionPane.showMessageDialog(delegado, bundle().getString("msg.fill.fields"));
+            return false;
+        }
+        return true;
+    }
+
+    /**
+     * Construye un objeto {@link persona} desde los campos del formulario.
+     * La categoría siempre se guarda con el valor canónico en español para
+     * mantener compatibilidad con el archivo CSV.
+     */
+    private persona construirDesdeFormulario() {
+        int catIdx = delegado.cmb_categoria.getSelectedIndex();
+        // CATEGORY_KEYS garantiza el valor canónico independientemente del idioma
+        String categoria = (catIdx >= 0 && catIdx < ventana.CATEGORY_KEYS.length)
+                ? ventana.CATEGORY_KEYS[catIdx]
+                : delegado.cmb_categoria.getSelectedItem().toString();
+
+        return new persona(
+                delegado.txt_nombres.getText().trim(),
+                delegado.txt_telefono.getText().trim(),
+                delegado.txt_email.getText().trim(),
+                categoria,
+                delegado.chb_favorito.isSelected()
+        );
+    }
+
+    /** Limpia todos los campos del formulario. */
+    private void limpiarCampos() {
+        delegado.txt_nombres.setText("");
+        delegado.txt_telefono.setText("");
+        delegado.txt_email.setText("");
+        delegado.cmb_categoria.setSelectedIndex(0);
+        delegado.chb_favorito.setSelected(false);
+        delegado.tbl_contactos.clearSelection();
+        delegado.txt_nombres.requestFocus();
+    }
+
+    /**
+     * Carga los datos de la fila seleccionada en el formulario.
+     * Usa la traducción inversa para seleccionar el índice correcto del combo.
+     */
+    private void cargarFilaEnFormulario() {
+        int rowView = delegado.tbl_contactos.getSelectedRow();
+        if (rowView < 0) return;
+
+        int rowModel = delegado.tbl_contactos.convertRowIndexToModel(rowView);
+
+        delegado.txt_nombres.setText(
+                String.valueOf(delegado.tableModel.getValueAt(rowModel, 0)));
+        delegado.txt_telefono.setText(
+                String.valueOf(delegado.tableModel.getValueAt(rowModel, 1)));
+        delegado.txt_email.setText(
+                String.valueOf(delegado.tableModel.getValueAt(rowModel, 2)));
+
+        // La columna 3 contiene el nombre localizado → buscar el índice correcto
+        String displayCat = String.valueOf(delegado.tableModel.getValueAt(rowModel, 3));
+        String[] displayNames = delegado.getCategoryDisplayNames();
+        int catIdx = -1;
+        for (int i = 0; i < displayNames.length; i++) {
+            if (displayNames[i].equals(displayCat)) { catIdx = i; break; }
+        }
+        if (catIdx >= 0) delegado.cmb_categoria.setSelectedIndex(catIdx);
+
+        delegado.chb_favorito.setSelected(
+                Boolean.parseBoolean(
+                        String.valueOf(delegado.tableModel.getValueAt(rowModel, 4))));
+    }
+
+    /** Actualiza las etiquetas de la pestaña de estadísticas. */
     private void actualizarEstadisticas() {
-        // NUEVO REQ-1/3: segunda pestaña con resumen
         int total = contactos.size();
         int favoritos = 0, amigos = 0, trabajo = 0, familia = 0;
 
         for (persona p : contactos) {
             if (p.isFavorito()) favoritos++;
-            String cat = p.getCategoria().toLowerCase();
-            if ("amigo".equals(cat)) amigos++;
-            if ("trabajo".equals(cat)) trabajo++;
-            if ("familia".equals(cat)) familia++;
+            // Comparación con CATEGORY_KEYS (valor canónico en español)
+            String cat = p.getCategoria();
+            if ("Amigo".equalsIgnoreCase(cat))   amigos++;
+            if ("Trabajo".equalsIgnoreCase(cat))  trabajo++;
+            if ("Familia".equalsIgnoreCase(cat))  familia++;
         }
 
-        delegado.lbl_total.setText("Total contactos: " + total);
-        delegado.lbl_favoritos.setText("Favoritos: " + favoritos);
-        delegado.lbl_amigos.setText("Categoría Amigo: " + amigos);
-        delegado.lbl_trabajo.setText("Categoría Trabajo: " + trabajo);
-        delegado.lbl_familia.setText("Categoría Familia: " + familia);
+        delegado.lbl_total.setText("\u25B6 " +
+                MessageFormat.format(bundle().getString("stats.total"), total));
+        delegado.lbl_favoritos.setText("\u2605 " +
+                MessageFormat.format(bundle().getString("stats.favorites"), favoritos));
+        delegado.lbl_amigos.setText("\u25CF " +
+                MessageFormat.format(bundle().getString("stats.friends"), amigos));
+        delegado.lbl_trabajo.setText("\u25CF " +
+                MessageFormat.format(bundle().getString("stats.work"), trabajo));
+        delegado.lbl_familia.setText("\u25CF " +
+                MessageFormat.format(bundle().getString("stats.family"), familia));
     }
 
+    // ─── Acceso rápido al bundle activo ───────────────────────────────────────
+    private ResourceBundle bundle() { return delegado.getBundle(); }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    //  ActionListener
+    // ═══════════════════════════════════════════════════════════════════════════
     @Override
     public void actionPerformed(ActionEvent e) {
         Object src = e.getSource();
-        if (src == delegado.btn_add) agregarContacto();
+        if      (src == delegado.btn_add)       agregarContacto();
         else if (src == delegado.btn_modificar) modificarContacto();
-        else if (src == delegado.btn_eliminar) eliminarSeleccionado();
-        else if (src == delegado.btn_exportar) exportarCSV();
-        else if (src == delegado.btn_importar) importarCSV();
+        else if (src == delegado.btn_eliminar)  eliminarSeleccionado();
+        else if (src == delegado.btn_exportar)  exportarCSV();
+        else if (src == delegado.btn_importar)  importarCSV();
     }
 }
