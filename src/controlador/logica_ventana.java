@@ -4,20 +4,11 @@ import modelo.persona;
 import modelo.personaDAO;
 import vista.ventana;
 
-import javax.swing.AbstractAction;
-import javax.swing.ActionMap;
-import javax.swing.InputMap;
-import javax.swing.JComponent;
-import javax.swing.JFileChooser;
-import javax.swing.JMenuItem;
-import javax.swing.JOptionPane;
-import javax.swing.JPopupMenu;
-import javax.swing.KeyStroke;
-import javax.swing.RowFilter;
-import javax.swing.SwingWorker;
+import javax.swing.*;
 import javax.swing.event.DocumentEvent;
 import javax.swing.event.DocumentListener;
 import javax.swing.table.TableRowSorter;
+import java.awt.*;
 import java.awt.event.ActionEvent;
 import java.awt.event.ActionListener;
 import java.awt.event.InputEvent;
@@ -40,6 +31,12 @@ public class logica_ventana implements ActionListener {
     private TableRowSorter sorter;
     // NUEVO: Variable para manejar los textos traducidos
     private ResourceBundle textos;
+    /*
+    Se declara un SwingWorker para ejecutar el filtrado de la tabla en un hilo
+    secundario, evitando que la interfaz se congele al buscar grandes volúmenes
+    de datos.
+     */
+    private SwingWorker<?, ?> workerBusqueda;
 
     public logica_ventana(ventana delegado) {
         this.delegado = delegado;
@@ -65,11 +62,47 @@ public class logica_ventana implements ActionListener {
             if (!e.getValueIsAdjusting()) cargarFilaEnFormulario();
         });
 
-        // NUEVO: filtro en vivo
+        /*
+        Cada vez que el usuario escribe, se lanza un SwingWorker que
+        espera 300ms para no saturar el sistema, cancela el worker
+        anterior si todavía se está ejecutando y aplica el filtro en
+        el hilo de eventos mediante invokeLater.
+        */
         delegado.txt_buscar.getDocument().addDocumentListener(new DocumentListener() {
-            public void insertUpdate(DocumentEvent e) { aplicarFiltro(); }
-            public void removeUpdate(DocumentEvent e) { aplicarFiltro(); }
-            public void changedUpdate(DocumentEvent e) { aplicarFiltro(); }
+            @Override
+            public void insertUpdate(DocumentEvent e) {
+                ejecutarFiltro();
+            }
+            @Override
+            public void removeUpdate(DocumentEvent e) {
+                ejecutarFiltro();
+            }
+            @Override
+            public void changedUpdate(DocumentEvent e) {
+                ejecutarFiltro();
+            }
+
+            private void ejecutarFiltro() {
+                if (workerBusqueda != null && !workerBusqueda.isDone()) {
+                    workerBusqueda.cancel(true);
+                }
+                workerBusqueda = new SwingWorker<Void, Void>() {
+                    @Override
+                    protected Void doInBackground() throws Exception {
+                        Thread.sleep(300);
+                        if (isCancelled()) return null;
+                        String texto = delegado.txt_buscar.getText().trim();
+                        RowFilter<Object, Object> filtro = null;
+                        if (!texto.isEmpty()) {
+                            filtro = RowFilter.regexFilter("(?i)" + Pattern.quote(texto));
+                        }
+                        final RowFilter<Object, Object> filtroFinal = filtro;
+                        SwingUtilities.invokeLater(() -> sorter.setRowFilter(filtroFinal));
+                        return null;
+                    }
+                };
+                workerBusqueda.execute();
+            }
         });
 
         // NUEVO: Evento para cambiar de idioma cuando el usuario selecciona el ComboBox
@@ -213,12 +246,6 @@ public class logica_ventana implements ActionListener {
         }
     }
 
-    private void aplicarFiltro() {
-        String texto = delegado.txt_buscar.getText().trim();
-        if (texto.isEmpty()) sorter.setRowFilter(null);
-        else sorter.setRowFilter(RowFilter.regexFilter("(?i)" + Pattern.quote(texto)));
-    }
-
     private boolean validarCampos() {
         if (delegado.txt_nombres.getText().trim().isEmpty() ||
                 delegado.txt_telefono.getText().trim().isEmpty() ||
@@ -263,37 +290,94 @@ public class logica_ventana implements ActionListener {
         delegado.chb_favorito.setSelected(Boolean.parseBoolean(String.valueOf(delegado.tableModel.getValueAt(rowModel, 4))));
     }
 
+    /*
+    Se lanza un hilo independiente para verificar si el contacto ya existe,
+    se usa synchronized sobre la lista "contactos" para evitar condiciones de
+    carrera, finalmente su está duplicado, se muestra una notificación temporal
+    de lo contario se guarda.
+     */
     private void agregarContacto() {
         if (!validarCampos()) return;
-        contactos.add(construirDesdeFormulario());
+        persona nuevo = construirDesdeFormulario();
 
-        if (dao.guardarTodos(contactos)) {
-            refrescarTabla();
-            actualizarEstadisticas();
-            limpiarCampos();
-            JOptionPane.showMessageDialog(delegado, textos.getString("msg.contacto.agregado"));
-        } else {
-            JOptionPane.showMessageDialog(delegado, textos.getString("msg.error.guardar"));
-        }
+        // ====== COMUNICACIÓN ENTRE HILOS (wait/notify) ======
+        final Object lockCom = new Object();
+        final boolean[] notificado = {false};
+
+        // Hilo monitor que espera la notificación del validador
+        Thread monitor = new Thread(() -> {
+            synchronized (lockCom) {
+                try {
+                    lockCom.wait(500); // espera hasta 500ms
+                } catch (InterruptedException e) {}
+            }
+        });
+        monitor.start();
+
+        // Hilo validador
+        Thread validador = new Thread(() -> {
+            boolean existe = false;
+            synchronized (contactos) {
+                for (persona p : contactos) {
+                    if (p.getNombre().equalsIgnoreCase(nuevo.getNombre()) ||
+                            p.getTelefono().equals(nuevo.getTelefono()) ||
+                            p.getEmail().equalsIgnoreCase(nuevo.getEmail())) {
+                        existe = true;
+                        break;
+                    }
+                }
+            }
+            final boolean duplicado = existe;
+            SwingUtilities.invokeLater(() -> {
+                if (duplicado) {
+                    mostrarNotificacionTemporal(textos.getString("msg.duplicado"), false);
+                } else {
+                    contactos.add(nuevo);
+                    if (dao.guardarTodos(contactos)) {
+                        refrescarTabla();
+                        actualizarEstadisticas();
+                        limpiarCampos();
+                        mostrarNotificacionTemporal(textos.getString("msg.contacto.agregado"), true);
+                    } else {
+                        mostrarNotificacionTemporal(textos.getString("msg.error.guardar"), false);
+                    }
+                }
+            });
+            // Notificar al monitor que ya terminó la validación
+            synchronized (lockCom) {
+                notificado[0] = true;
+                lockCom.notify();
+            }
+        });
+        validador.start();
     }
 
+    /*
+    Se usa synchronized sobre el objeto anterior o viejo para evitar
+    que dos hilos modifiquen el mismo contacto al mismo tiempo, es decir
+    evitando condiciones de carrera.
+     */
     private void modificarContacto() {
         int rowView = delegado.tbl_contactos.getSelectedRow();
         if (rowView < 0) {
-            JOptionPane.showMessageDialog(delegado, textos.getString("msg.selecciona.modificar"));
+            mostrarNotificacionTemporal(textos.getString("msg.selecciona.modificar"), false);
             return;
         }
         if (!validarCampos()) return;
 
         int rowModel = delegado.tbl_contactos.convertRowIndexToModel(rowView);
-        contactos.set(rowModel, construirDesdeFormulario());
+        persona viejo = contactos.get(rowModel);
+        persona nuevo = construirDesdeFormulario();
 
-        if (dao.guardarTodos(contactos)) {
-            refrescarTabla();
-            actualizarEstadisticas();
-            JOptionPane.showMessageDialog(delegado, textos.getString("msg.contacto.modificado"));
-        } else {
-            JOptionPane.showMessageDialog(delegado, textos.getString("msg.error.modificar"));
+        synchronized (viejo) {
+            contactos.set(rowModel, nuevo);
+            if (dao.guardarTodos(contactos)) {
+                refrescarTabla();
+                actualizarEstadisticas();
+                mostrarNotificacionTemporal(textos.getString("msg.contacto.modificado"), true);
+            } else {
+                mostrarNotificacionTemporal(textos.getString("msg.error.modificar"), false);
+            }
         }
     }
 
@@ -320,23 +404,36 @@ public class logica_ventana implements ActionListener {
         }
     }
 
+    /*
+    Se lanza un hilo para exportar sin bloquear la interfaz, sincronizando
+    el acceso al objeto DAO para evitar que múltiples exportaciones simultaneas
+    corrompan el archivo.
+     */
     private void exportarCSV() {
-        // NUEVO REQ-3
         JFileChooser chooser = new JFileChooser();
         chooser.setDialogTitle(textos.getString("msg.titulo.exportar"));
         chooser.setSelectedFile(new File("contactos_exportados.csv"));
-
         int opcion = chooser.showSaveDialog(delegado);
-        if (opcion == JFileChooser.APPROVE_OPTION) {
-            File destino = chooser.getSelectedFile();
-            if (dao.exportarCSV(contactos, destino)) {
-                JOptionPane.showMessageDialog(delegado, textos.getString("msg.export.exito") + destino.getAbsolutePath());
-            } else {
-                JOptionPane.showMessageDialog(delegado, textos.getString("msg.error.export"));
+        if (opcion != JFileChooser.APPROVE_OPTION) return;
+        File destino = chooser.getSelectedFile();
+
+        new Thread(() -> {
+            boolean exito;
+            synchronized (dao) {
+                exito = dao.exportarCSV(contactos, destino);
             }
-        }
+            final boolean resultado = exito;
+            SwingUtilities.invokeLater(() -> {
+                if (resultado) {
+                    mostrarNotificacionTemporal(textos.getString("msg.export.exito") + destino.getAbsolutePath(), true);
+                } else {
+                    mostrarNotificacionTemporal(textos.getString("msg.error.export"), false);
+                }
+            });
+        }).start();
     }
-    //logica apra boton importar
+
+    //logica para boton importar
     private void importarCSV() {
         JFileChooser chooser = new JFileChooser();
         chooser.setDialogTitle(textos.getString("msg.titulo.importar"));
@@ -368,6 +465,23 @@ public class logica_ventana implements ActionListener {
             delegado.lbl_trabajo.setText(textos.getString("stat.trabajo") + trabajo);
             delegado.lbl_familia.setText(textos.getString("stat.familia") + familia);
         }
+    }
+
+    /*
+    Se usa un hilo para mostrar un mensaje temporal en la barra de progreso
+    , este mensaje se muestra durante 2 segundos y se restaura, Se utiliza
+    SwingUtilities.invokeLater() para actualizar la UI desde el hilo secundario
+     */
+    private void mostrarNotificacionTemporal(String mensaje, boolean exito) {
+        delegado.progressBar.setString(mensaje);
+        delegado.progressBar.setForeground(exito ? Color.GREEN : Color.RED);
+        new Thread(() -> {
+            try { Thread.sleep(2000); } catch (InterruptedException e) {}
+            SwingUtilities.invokeLater(() -> {
+                delegado.progressBar.setString("Listo");
+                delegado.progressBar.setForeground(UIManager.getColor("ProgressBar.foreground"));
+            });
+        }).start();
     }
 
     @Override

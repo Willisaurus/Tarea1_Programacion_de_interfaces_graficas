@@ -64,9 +64,9 @@ public class ventana extends JFrame {
         });
     }
     /*
-    A priori de un diseno mas enfocado al usuario, comodo, minimalista
-    y atrativo se elimino toda la distribucion anterior del constructor
-    pasando de TabbedPane a SplitPane que usa el patron de diseno master
+    A priori de un diseño más enfocado al usuario, comodo, minimalista
+    y atractivo se eliminó toda la distribución anterior del constructor
+    pasando de TabbedPane a SplitPane que usa el patron de diseño master
     detail
      */
     public ventana() {
