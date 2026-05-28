@@ -1,0 +1,46 @@
+plugins {
+    id 'java'
+    id 'application'
+    //Inclusión del plugin de OWASP para las dependencias en su versión más reciente
+    id "org.owasp.dependencycheck" version "12.2.2"
+}
+
+group = 'com.tusiglas'
+version = '1.0'
+
+java {
+    //Definición de la versión de Java que se usa
+    sourceCompatibility = JavaVersion.VERSION_25
+    targetCompatibility = JavaVersion.VERSION_25
+}
+
+repositories {
+    //Repositorio fuente de las librerias
+    mavenCentral()
+}
+
+dependencies {
+    //Descarga de las dependencias
+    implementation 'com.formdev:flatlaf:3.4'
+    implementation 'com.google.code.gson:gson:2.10.1'
+}
+
+dependencyCheck {
+    //Configuración de OWASP para generar un archivo html con
+    //los resultados de la auditoria.
+    format = 'HTML'
+    outputDirectory = file("$buildDir/reports/owasp")
+    failBuildOnCVSS = 7
+    //Configruaciín de uso server local con el espejo de la base del NVD
+    nvd {
+        datafeedUrl = 'http://localhost:8000/nvdcve-{0}.json.gz'
+    }
+}
+
+application {
+    mainClass = 'vista.ventana'
+}
+
+run {
+    standardInput = System.in
+}

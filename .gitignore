@@ -1,7 +1,28 @@
+# Archivos y carpetas de IntelliJ IDEA
 .idea/
 *.iml
+*.iws
+*.ipr
+out/
+
+# Archivos de Gradle (caché, builds)
+.gradle/
+build/
+
+# Archivos compilados de Java
 *.class
+
+# Archivos de log
 *.log
+
+# Archivos del sistema operativo
 Thumbs.db
 .DS_Store
 
+# Archivos de respaldo
+*.orig
+*.bak
+
+# Archivos temporales de editor
+*~
+*.swp

@@ -13,15 +13,6 @@ public class personaDAO {
     private File archivo;
 
     public personaDAO() {
-        /*
-         * ELIMINADO DEL CÓDIGO ANTERIOR:
-         * - Dependencia de constructor personaDAO(persona persona)
-         * - escritura orientada a una sola persona guardada en atributo interno
-         *
-         * MOTIVO:
-         * En MVC conviene DAO independiente del formulario.
-         * El controlador envía listas completas para consistencia.
-         */
 
         File carpeta = new File(System.getProperty("user.home"), "gestionContactos");
         if (!carpeta.exists()) carpeta.mkdirs();
